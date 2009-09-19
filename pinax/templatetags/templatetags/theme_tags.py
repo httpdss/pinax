@@ -17,7 +17,6 @@ def silk(parser, token):
         name = split_token[1][1:-1]
     
         # get all arguments and join them.
-        # FIXME src argument can be repeated 
         attrs = ' '.join(split_token[2:])
     except ValueError:
         raise template.TemplateSyntaxError, "%r tag has argument errors" % token.split_contents()[0] 
