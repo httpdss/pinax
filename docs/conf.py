@@ -15,14 +15,18 @@ import sys, os
 # If your extensions are in another directory, add it here. If the directory
 # is relative to the documentation root, use os.path.abspath to make it
 # absolute, like shown here.
-#sys.path.append(os.path.abspath('some/directory'))
+sys.path.append(os.path.abspath(os.curdir))
+sys.path.append(os.path.abspath(os.pardir))
+os.environ["DJANGO_SETTINGS_MODULE"] = "settings"
 
 # General configuration
 # ---------------------
 
 # Add any Sphinx extension module names here, as strings. They can be extensions
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
-extensions = []
+extensions = [
+    'sphinx.ext.autodoc',
+]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -35,7 +39,7 @@ master_doc = 'index'
 
 # General substitutions.
 project = 'Pinax'
-copyright = '2008, James Tauber and Pinax Team'
+copyright = '2010, James Tauber and Pinax Team'
 
 # The default replacements for |version| and |release|, also used in various
 # other places throughout the built documents.
@@ -43,7 +47,7 @@ copyright = '2008, James Tauber and Pinax Team'
 # The short X.Y version.
 version = '0.9'
 # The full version, including alpha/beta/rc tags.
-release = '0.9alpha1'
+release = '0.9a2'
 
 # There are two options for replacing |today|: either, you set today to some
 # non-false value, then it is used:

@@ -1,74 +1,86 @@
-from datetime import date
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from itertools import chain
 from operator import attrgetter
 
-
-from django.shortcuts import render_to_response, get_object_or_404
-from django.core.exceptions import ObjectDoesNotExist
 from django.conf import settings
-from django.http import HttpResponse, HttpResponseRedirect, Http404
-from django.template import RequestContext
+from django.core.exceptions import ObjectDoesNotExist, ImproperlyConfigured
 from django.core.urlresolvers import reverse
-from django.core.exceptions import ImproperlyConfigured
-from django.db.models import get_app
-from django.db.models import Q
+from django.db.models import Q, get_app
+from django.http import HttpResponse, HttpResponseRedirect, Http404
+from django.shortcuts import render_to_response, get_object_or_404
+from django.template import RequestContext
+from django.utils.importlib import import_module
+from django.utils.translation import ugettext
 
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import Group
 from django.contrib.auth.models import User
-from django.contrib.sites.models import Site
 from django.contrib.contenttypes.models import ContentType
-
-from pinax.utils.importlib import import_module
-
-from tagging.models import Tag
-from django.utils.translation import ugettext
+from django.contrib.sites.models import Site
 
 # Only import dpaste Snippet Model if it's activated
-if 'dpaste' in getattr(settings, 'INSTALLED_APPS', []):
+if "dpaste" in getattr(settings, "INSTALLED_APPS"):
     from dpaste.models import Snippet
 else:
     Snippet = False
-
-from tasks.models import Task, TaskHistory, Nudge
-from tasks.filters import TaskFilter
-from tasks.forms import TaskForm, EditTaskForm, SearchTaskForm
-
-workflow = import_module(getattr(settings, "TASKS_WORKFLOW_MODULE", "tasks.workflow"))
-
-try:
-    notification = get_app('notification')
-except ImproperlyConfigured:
+if "notification" in getattr(settings, "INSTALLED_APPS"):
+    from notification import models as notification
+else:
     notification = None
 
+from tagging.models import Tag
 
-def tasks(request, group_slug=None, template_name="tasks/task_list.html", bridge=None):
+from pinax.apps.tasks.filters import TaskFilter
+from pinax.apps.tasks.forms import TaskForm, EditTaskForm
+from pinax.apps.tasks.models import Task, TaskHistory, Nudge
+
+
+
+workflow = import_module(getattr(settings, "TASKS_WORKFLOW_MODULE", "pinax.apps.tasks.workflow"))
+
+
+
+def group_and_bridge(request):
+    """
+    Given the request we can depend on the GroupMiddleware to provide the
+    group and bridge.
+    """
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
+    # be group aware
+    group = getattr(request, "group", None)
+    if group:
+        bridge = request.bridge
     else:
-        group = None
+        bridge = None
     
-    if not request.user.is_authenticated():
-        is_member = False
+    return group, bridge
+
+
+def group_context(group, bridge):
+    # @@@ use bridge
+    ctx = {
+        "group": group,
+    }
+    if group:
+        ctx["group_base"] = bridge.group_base_template()
+    return ctx
+
+
+def tasks(request, template_name="tasks/task_list.html"):
+    
+    group, bridge = group_and_bridge(request)
+    if group:
+        is_member = group.request.user_is_member()
     else:
-        if group:
-            is_member = group.user_is_member(request.user)
-        else:
-            is_member = True
+        is_member = True
     
     group_by = request.GET.get("group_by")
     
     if group:
         tasks = group.content_objects(Task)
-        group_base = bridge.group_base_template()
     else:
         tasks = Task.objects.filter(object_id=None)
-        group_base = None
     
     tasks = tasks.select_related("assignee")
     
@@ -88,40 +100,26 @@ def tasks(request, group_slug=None, template_name="tasks/task_list.html", bridge
     group_by_querydict.pop("group_by", None)
     group_by_querystring = group_by_querydict.urlencode()
     
-    return render_to_response(template_name, {
-        "group": group,
+    ctx = group_context(group, bridge)
+    ctx.update({
         "group_by": group_by,
         "gbqs": group_by_querystring,
         "is_member": is_member,
-        "group_base": group_base,
         "task_filter": task_filter,
         "tasks": task_filter.qs,
         "querystring": request.GET.urlencode(),
-    }, context_instance=RequestContext(request))
+    })
+    
+    return render_to_response(template_name, RequestContext(request, ctx))
 
 
-def add_task(request, group_slug=None, secret_id=None, form_class=TaskForm, template_name="tasks/add.html", bridge=None):
+def add_task(request, secret_id=None, form_class=TaskForm, template_name="tasks/add.html"):
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
-    else:
-        group = None
-    
+    group, bridge = group_and_bridge(request)
     if group:
-        group_base = bridge.group_base_template()
+        is_member = group.request.user_is_member()
     else:
-        group_base = None
-    
-    if not request.user.is_authenticated():
-        is_member = False
-    else:
-        if group:
-            is_member = group.user_is_member(request.user)
-        else:
-            is_member = True
+        is_member = True
     
     # If we got an ID for a snippet in url, collect some initial values
     # But only if we could import the Snippet Model so
@@ -129,13 +127,13 @@ def add_task(request, group_slug=None, secret_id=None, form_class=TaskForm, temp
         paste = get_object_or_404(Snippet, secret_id=secret_id)
         paste.expires = datetime.now() + timedelta(seconds=3600*24*30*12*100) # Update the expiration time to maximum
         paste.save()
-        paste_link = ugettext('Link to the snippet: http://%(domain)s%(link)s\n\n' % {
-                                'domain': Site.objects.get_current().domain,
-                                'link': reverse('snippet_details', kwargs={'snippet_id': paste.secret_id})
-                             })
+        paste_link = ugettext("Link to the snippet: http://%(domain)s%(link)s\n\n") % {
+            "domain": Site.objects.get_current().domain,
+            "link": reverse("snippet_details", kwargs={"snippet_id": paste.secret_id})
+        }
         initial = {
-            'summary': paste.title,
-            'detail': paste_link,
+            "summary": paste.title,
+            "detail": paste_link,
         }
     else:
         initial = {}
@@ -148,10 +146,12 @@ def add_task(request, group_slug=None, secret_id=None, form_class=TaskForm, temp
                 task.creator = request.user
                 task.group = group
                 if hasattr(workflow, "initial_state"):
-                    task.state = workflow.initial_state(task, user)
+                    task.state = workflow.initial_state(task, request.user)
                 task.save()
                 task.save_history()
-                request.user.message_set.create(message="added task '%s'" % task.summary)
+                messages.add_message(request, messages.SUCCESS,
+                    ugettext("added task '%s'") % task.summary
+                )
                 if notification:
                     if group:
                         notify_list = group.member_queryset()
@@ -159,7 +159,7 @@ def add_task(request, group_slug=None, secret_id=None, form_class=TaskForm, temp
                         notify_list = User.objects.all() # @@@
                     notify_list = notify_list.exclude(id__exact=request.user.id)
                     notification.send(notify_list, "tasks_new", {"creator": request.user, "task": task, "group": group})
-                if request.POST.has_key('add-another-task'):
+                if request.POST.has_key("add-another-task"):
                     if group:
                         redirect_to = bridge.reverse("task_add", group)
                     else:
@@ -173,24 +173,26 @@ def add_task(request, group_slug=None, secret_id=None, form_class=TaskForm, temp
     else:
         task_form = form_class(request.user, group, initial=initial)
     
-    return render_to_response(template_name, {
-        "group": group,
+    ctx = group_context(group, bridge)
+    ctx.update({
         "is_member": is_member,
         "task_form": task_form,
-        "group_base": group_base,
-    }, context_instance=RequestContext(request))
+    })
+    
+    return render_to_response(template_name, RequestContext(request, ctx))
+
 
 @login_required
-def nudge(request, id, group_slug=None, bridge=None):
-    """ Called when a user nudges a ticket """
+def nudge(request, id):
+    """
+    Called when a user nudges a ticket
+    """
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
+    group, bridge = group_and_bridge(request)
+    if group:
+        is_member = group.request.user_is_member()
     else:
-        group = None
+        is_member = True
     
     if group:
         tasks = group.content_objects(Task)
@@ -205,8 +207,9 @@ def nudge(request, id, group_slug=None, bridge=None):
         # you've already nudged this task.
         nudge = nudged[0]
         nudge.delete()
-        message = "You've removed your nudge from this task"
-        request.user.message_set.create(message=message)
+        messages.add_message(request, messages.SUCCESS,
+            ugettext("You've removed your nudge from this task")
+        )
         return HttpResponseRedirect(task_url)
     
     
@@ -216,8 +219,9 @@ def nudge(request, id, group_slug=None, bridge=None):
     count = Nudge.objects.filter(task__exact=task).count()
     
     # send the message to the user
-    message = "%s has been nudged about this task" % task.assignee
-    request.user.message_set.create(message=message)
+    messages.add_message(request, messages.SUCCESS,
+        ugettext("%s has been nudged about this task") % task.assignee
+    )
     
     # send out the nudge notification
     if notification:
@@ -226,22 +230,19 @@ def nudge(request, id, group_slug=None, bridge=None):
     
     return HttpResponseRedirect(task_url)
 
-def task(request, id, group_slug=None, template_name="tasks/task.html", bridge=None):
+
+def task(request, id, template_name="tasks/task.html"):
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
+    group, bridge = group_and_bridge(request)
+    if group:
+        is_member = group.request.user_is_member()
     else:
-        group = None
+        is_member = True
     
     if group:
         tasks = group.content_objects(Task)
-        group_base = bridge.group_base_template()
     else:
         tasks = Task.objects.filter(object_id=None)
-        group_base = None
     
     task = get_object_or_404(tasks, id=id)
     
@@ -267,19 +268,32 @@ def task(request, id, group_slug=None, template_name="tasks/task.html", bridge=N
             if task.assignee == request.user:
                 task.denudge()
             if "status" in form.changed_data:
-                request.user.message_set.create(message="updated your status on the task")
+                messages.add_message(request, messages.SUCCESS,
+                    ugettext("updated your status on the task")
+                )
                 if notification:
                     notification.send(notify_list, "tasks_status", {"user": request.user, "task": task, "group": group})
             if "state" in form.changed_data:
-                request.user.message_set.create(message="task marked %s" % task.get_state_display())
+                messages.add_message(request, messages.SUCCESS,
+                    ugettext("task marked %(state)s") % {
+                        "state": task.get_state_display()
+                    }
+                )
                 if notification:
                     notification.send(notify_list, "tasks_change", {"user": request.user, "task": task, "group": group, "new_state": task.get_state_display()})
             if "assignee" in form.changed_data:
-                request.user.message_set.create(message="assigned task to '%s'" % task.assignee)
+                messages.add_message(request, messages.SUCCESS,
+                    ugettext("assigned task to '%(assignee)s'") % {
+                        # @@@ user_display
+                        "assignee": task.assignee
+                    }
+                )
                 if notification:
                     notification.send(notify_list, "tasks_assignment", {"user": request.user, "task": task, "assignee": task.assignee, "group": group})
             if "tags" in form.changed_data:
-                request.user.message_set.create(message="updated tags on the task")
+                messages.add_message(request, messages.SUCCESS,
+                    ugettext("updated tags on the task")
+                )
                 if notification:
                     notification.send(notify_list, "tasks_tags", {"user": request.user, "task": task, "group": group})
             form = EditTaskForm(request.user, group, instance=task)
@@ -288,49 +302,46 @@ def task(request, id, group_slug=None, template_name="tasks/task.html", bridge=N
     
     # The NUDGE dictionary
     nudge = {}
-    nudge['nudgeable'] = False
+    nudge["nudgeable"] = False
     
     # get the count of nudges so assignee can see general level of interest.
-    nudge['count'] = Nudge.objects.filter(task__exact=task).count()
+    nudge["count"] = Nudge.objects.filter(task__exact=task).count()
     
     # get the nudge if you are not the assignee otherwise just a None
     if is_member and request.user != task.assignee and task.assignee:
-        nudge['nudgeable'] = True
+        nudge["nudgeable"] = True
         try:
-            nudge['nudge'] = Nudge.objects.filter(nudger__exact=request.user, task__exact=task)[0]
+            nudge["nudge"] = Nudge.objects.filter(nudger__exact=request.user, task__exact=task)[0]
         except IndexError:
-            nudge['nudge'] = None
+            nudge["nudge"] = None
     
     # get the nudge history
-    nudge['history'] = Nudge.objects.filter(task__exact=task)
+    nudge["history"] = Nudge.objects.filter(task__exact=task)
     
-    return render_to_response(template_name, {
-        "group": group,
+    ctx = group_context(group, bridge)
+    ctx.update({
         "nudge": nudge,
         "task": task,
         "is_member": is_member,
         "form": form,
-        "group_base": group_base,
-    }, context_instance=RequestContext(request))
+    })
+    
+    return render_to_response(template_name, RequestContext(request, ctx))
 
 
 @login_required
-def user_tasks(request, username, group_slug=None, template_name="tasks/user_tasks.html", bridge=None):
+def user_tasks(request, username, template_name="tasks/user_tasks.html"):
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
+    group, bridge = group_and_bridge(request)
+    if group:
+        is_member = group.request.user_is_member()
     else:
-        group = None
+        is_member = True
     
     if group:
         other_user = get_object_or_404(group.member_queryset(), username=username)
-        group_base = bridge.group_base_template()
     else:
         other_user = get_object_or_404(User, username=username)
-        group_base = None
     
     assigned_tasks = other_user.assigned_tasks.all()
     created_tasks = other_user.created_tasks.all()
@@ -383,13 +394,13 @@ def user_tasks(request, username, group_slug=None, template_name="tasks/user_tas
         url = site_url + reverse("tasks_mini_list")
     
     bookmarklet = """javascript:(function() {
-url = '%s';
-window.open(url, 'tasklist', 'height=500, width=250, title=no, location=no,
+url = "%s";
+window.open(url, "tasklist", "height=500, width=250, title=no, location=no,
 scrollbars=yes, menubars=no, navigation=no, statusbar=no, directories=no,
-resizable=yes, status=no, toolbar=no, menuBar=no');})()""" % url
+resizable=yes, status=no, toolbar=no, menuBar=no");})()""" % url
     
-    return render_to_response(template_name, {
-        "group": group,
+    ctx = group_context(group, bridge)
+    ctx.update({
         "assigned_filter": assigned_filter,
         "created_filter": created_filter,
         "nudged_filter": nudged_filter,
@@ -398,19 +409,19 @@ resizable=yes, status=no, toolbar=no, menuBar=no');})()""" % url
         "nudged_tasks": nudged_tasks,
         "other_user": other_user,
         "bookmarklet": bookmarklet,
-        "group_base": group_base,
-    }, context_instance=RequestContext(request))
+    })
+    
+    return render_to_response(template_name, RequestContext(request, ctx))
 
 
 @login_required
-def mini_list(request, group_slug=None, template_name="tasks/mini_list.html", bridge=None):
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
+def mini_list(request, template_name="tasks/mini_list.html"):
+    
+    group, bridge = group_and_bridge(request)
+    if group:
+        is_member = group.request.user_is_member()
     else:
-        group = None
+        is_member = True
     
     assigned_tasks = request.user.assigned_tasks.all().exclude(state="2").exclude(state="3").order_by("state", "-modified")
     
@@ -419,38 +430,28 @@ def mini_list(request, group_slug=None, template_name="tasks/mini_list.html", br
     else:
         assigned_tasks = assigned_tasks.filter(object_id=None)
     
-    return render_to_response(template_name, {
-        "group": group,
+    ctx = group_context(group, bridge)
+    ctx.update({
         "assigned_tasks": assigned_tasks,
-    }, context_instance=RequestContext(request))
+    })
+    
+    return render_to_response(template_name, RequestContext(request, ctx))
 
 
-def focus(request, field, value, group_slug=None, template_name="tasks/focus.html", bridge=None):
+def focus(request, field, value, template_name="tasks/focus.html"):
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
+    group, bridge = group_and_bridge(request)
+    if group:
+        is_member = group.request.user_is_member()
     else:
-        group = None
-    
-    if not request.user.is_authenticated():
-        is_member = False
-    else:
-        if group:
-            is_member = group.user_is_member(request.user)
-        else:
-            is_member = True
+        is_member = True
     
     group_by = request.GET.get("group_by")
     
     if group:
         tasks = group.content_objects(Task)
-        group_base = bridge.group_base_template()
     else:
         tasks = Task.objects.filter(object_id=None)
-        group_base = None
     
     # default filtering
     state_keys = dict(workflow.STATE_CHOICES).keys()
@@ -484,7 +485,7 @@ def focus(request, field, value, group_slug=None, template_name="tasks/focus.htm
             raise Http404
         tasks = tasks.filter(state=state)
     elif field == "assignee":
-        if value == "unassigned": # @@@ this means can't have a username 'unassigned':
+        if value == "unassigned": # @@@ this means can"t have a username "unassigned":
             tasks = tasks.filter(assignee__isnull=True)
         else:
             try:
@@ -509,8 +510,8 @@ def focus(request, field, value, group_slug=None, template_name="tasks/focus.htm
     group_by_querydict.pop("group_by", None)
     group_by_querystring = group_by_querydict.urlencode()
     
-    return render_to_response(template_name, {
-        "group": group,
+    ctx = group_context(group, bridge)
+    ctx.update({
         "task_filter": task_filter,
         "tasks": tasks,
         "field": field,
@@ -518,68 +519,54 @@ def focus(request, field, value, group_slug=None, template_name="tasks/focus.htm
         "group_by": group_by,
         "gbqs": group_by_querystring,
         "is_member": is_member,
-        "group_base": group_base,
-    }, context_instance=RequestContext(request))
+    })
+    
+    return render_to_response(template_name, RequestContext(request, ctx))
 
 
-def tasks_history_list(request, group_slug=None, template_name="tasks/tasks_history_list.html", bridge=None):
+def tasks_history_list(request, template_name="tasks/tasks_history_list.html"):
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
+    group, bridge = group_and_bridge(request)
+    if group:
+        is_member = group.request.user_is_member()
     else:
-        group = None
-    
-    if not request.user.is_authenticated():
-        is_member = False
-    else:
-        if group:
-            is_member = group.user_is_member(request.user)
-        else:
-            is_member = True
+        is_member = True
     
     if group:
         tasks = group.content_objects(TaskHistory)
-        group_base = bridge.group_base_template()
     else:
         tasks = TaskHistory.objects.filter(object_id=None)
-        group_base = None
     tasks = tasks.order_by("-modified")
     
-    return render_to_response(template_name, {
-        "group": group,
+    ctx = group_context(group, bridge)
+    ctx.update({
         "task_history": tasks,
         "is_member": is_member,
-        "group_base": group_base,
-    }, context_instance=RequestContext(request))
-
-
-def tasks_history(request, id, group_slug=None, template_name="tasks/task_history.html", bridge=None):
+    })
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
+    return render_to_response(template_name, RequestContext(request, ctx))
+
+
+def tasks_history(request, id, template_name="tasks/task_history.html"):
+    
+    group, bridge = group_and_bridge(request)
+    if group:
+        is_member = group.request.user_is_member()
     else:
-        group = None
+        is_member = True
     
     if group:
         tasks = group.content_objects(Task)
-        group_base = bridge.group_base_template()
     else:
         tasks = Task.objects.filter(object_id=None)
-        group_base = None
     
     task = get_object_or_404(tasks, id=id)
-    task_history = task.history_task.all().order_by('-modified')
-    nudge_history = task.task_nudge.all().order_by('-modified')
+    task_history = task.history_task.all().order_by("-modified")
+    nudge_history = task.task_nudge.all().order_by("-modified")
     
     result_list = sorted(
         chain(task_history, nudge_history),
-        key=attrgetter('modified')
+        key=attrgetter("modified")
         )
     result_list.reverse()
     
@@ -587,15 +574,16 @@ def tasks_history(request, id, group_slug=None, template_name="tasks/task_histor
         change.humanized_state = workflow.STATE_CHOICES_DICT.get(change.state, None)
         change.humanized_resolution = workflow.RESOLUTION_CHOICES_DICT.get(change.resolution, None)
     
-    return render_to_response(template_name, {
-        "group": group,
+    ctx = group_context(group, bridge)
+    ctx.update({
         "task": task,
         "task_history": result_list,
         "nudge_history": nudge_history,
-        "group_base": group_base,
-    }, context_instance=RequestContext(request))
+    })
+    
+    return render_to_response(template_name, RequestContext(request, ctx))
 
 
 def export_state_transitions(request):
     export = workflow.export_state_transitions()
-    return HttpResponse(export, mimetype='text/csv')
+    return HttpResponse(export, mimetype="text/csv")
