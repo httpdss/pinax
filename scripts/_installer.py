@@ -3,20 +3,9 @@ import sys
 import urllib
 
 PINAX_GIT_LOCATION = 'git://github.com/pinax/pinax.git'
-PINAX_PYPI_MIRRORS = [
-    'http://pypi.pinaxproject.com',
-    'http://pypi2.pinaxproject.com',
-]
+PINAX_DIST_INDEX = 'http://dist.pinaxproject.com/dev/'
 PINAX_MUST_HAVES = {
-    'setuptools-git': ('0.3.4', 'setuptools_git-0.3.4.tar.gz'),
-    'setuptools-dummy': ('0.0.3', 'setuptools_dummy-0.0.3.tar.gz'),
-    'Django': ('1.0.4', 'Django-1.0.4.tar.gz'),
 }
-
-DJANGO_VERSIONS = (
-    '1.0.4',
-#    '1.1',
-)
 
 if sys.platform == 'win32':
     GIT_CMD = 'git.cmd'
@@ -104,9 +93,6 @@ def extend_parser(parser):
     parser.add_option("-d", "--development",
         action="store_true", dest="development",
         help="Setup development environment")
-    parser.add_option("--django-version",
-        metavar="DJANGO_VERSION", dest="django_version", default=None,
-        help="The version of Django to be installed, e.g. --django-version=1.0.4 will install Django 1.0.4. The default is 1.0.4.")
 
 def adjust_options(options, args):
     """
@@ -117,43 +103,27 @@ def adjust_options(options, args):
     if options.release and options.development:
         print "ERROR: please use --development without providing a --release version."
         sys.exit(101)
-    if options.django_version:
-        if options.django_version not in DJANGO_VERSIONS:
-            print "ERROR: this Django version is not supported."
-            print "Use one of those: %s" % ", ".join(DJANGO_VERSIONS)
-            sys.exit(101)
-        django_tarball = 'Django-%s.tar.gz' % options.django_version
-        PINAX_MUST_HAVES['django'] = (options.django_version, django_tarball)
     if not args:
         return # caller will raise error
 
-def install_base(parent_dir, bin_dir, requirements_dir, packages):
+def install_base(parent_dir, bin_dir, requirements_dir, options, packages):
     """
     Installs base packages from the bundled tarball if existing
     """
     packages = packages.copy() # prevent changing the global data
-    
-    find_links = []
-    for mirror in PINAX_PYPI_MIRRORS:
-        find_links.extend(['--find-links', mirror])
-    # resolve path to the freshly installed pip
-    pip = resolve_command(PIP_CMD, bin_dir)
-    for pkg in packages:
-        version, filename = packages[pkg]
-        src = join(requirements_dir, 'base', filename)
-        if not os.path.exists(src):
-            # get it from the PyPI
-            src = '%s==%s' % (pkg, version)
-        logger.notify('Installing %s %s' % (pkg, version))
-        call_subprocess([
-            pip,
-            'install',
-            '--quiet',
-            '--no-deps',
-            '--ignore-installed',
-        ] + find_links + [
-            src,
-        ], filter_stdout=filter_lines, show_stdout=False)
+    pip = resolve_command(PIP_CMD, bin_dir) # resolve path to the freshly installed pip
+    args = [pip, 'install', '--no-deps', '--ignore-installed']
+    if not options.development:
+         args.append('--quiet')
+    args.extend(['--find-links', filename_to_url(join(requirements_dir, 'base'))])
+    args.extend(['--extra-index-url', PINAX_DIST_INDEX])
+    for pkg, version in packages.items():
+        if not (version.startswith('=') or version.startswith('<') or version.startswith('>')):
+            version = '==%s' % version
+        src = '%s%s' % (pkg, version)
+        logger.notify('Installing %s' % src)
+        args.append(src)
+        call_subprocess(args, filter_stdout=filter_lines, show_stdout=False)
     return pip
 
 def after_install(options, home_dir):
@@ -165,7 +135,7 @@ def after_install(options, home_dir):
     python = resolve_command(expected_exe, bin_dir)
 
     requirements_dir = join(parent_dir, 'requirements')
-    pip = install_base(parent_dir, bin_dir, requirements_dir, PINAX_MUST_HAVES)
+    pip = install_base(parent_dir, bin_dir, requirements_dir, options, PINAX_MUST_HAVES)
 
     version_file = join(parent_dir, 'VERSION')
     if os.path.exists(version_file) and not options.release:

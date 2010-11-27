@@ -1,39 +1,32 @@
-from django.conf.urls.defaults import *
 from django.conf import settings
-
+from django.conf.urls.defaults import *
 from django.views.generic.simple import direct_to_template
 
 from django.contrib import admin
 admin.autodiscover()
 
-from account.openid_consumer import PinaxConsumer
+from pinax.apps.account.openid_consumer import PinaxConsumer
 
 
-if settings.ACCOUNT_OPEN_SIGNUP:
-    signup_view = "account.views.signup"
-else:
-    signup_view = "signup_codes.views.signup"
+handler500 = "pinax.views.server_error"
 
 
-urlpatterns = patterns('',
-    url(r'^$', direct_to_template, {
+urlpatterns = patterns("",
+    url(r"^$", direct_to_template, {
         "template": "homepage.html",
     }, name="home"),
-    
-    url(r'^admin/invite_user/$', 'signup_codes.views.admin_invite_user', name="admin_invite_user"),
-    url(r'^account/signup/$', signup_view, name="acct_signup"),
-    
-    (r'^about/', include('about.urls')),
-    (r'^account/', include('account.urls')),
-    (r'^openid/(.*)', PinaxConsumer()),
-    (r'^profiles/', include('basic_profiles.urls')),
-    (r'^notices/', include('notification.urls')),
-    (r'^announcements/', include('announcements.urls')),
-    
-    (r'^admin/(.*)', admin.site.root),
+    url(r"^admin/invite_user/$", "pinax.apps.signup_codes.views.admin_invite_user", name="admin_invite_user"),
+    url(r"^admin/", include(admin.site.urls)),
+    url(r"^about/", include("about.urls")),
+    url(r"^account/", include("pinax.apps.account.urls")),
+    url(r"^openid/(.*)", PinaxConsumer()),
+    url(r"^profiles/", include("idios.urls")),
+    url(r"^notices/", include("notification.urls")),
+    url(r"^announcements/", include("announcements.urls")),
 )
 
+
 if settings.SERVE_MEDIA:
-    urlpatterns += patterns('',
-        (r'^site_media/', include('staticfiles.urls')),
+    urlpatterns += patterns("",
+        url(r"", include("staticfiles.urls")),
     )

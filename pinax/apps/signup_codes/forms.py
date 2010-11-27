@@ -2,20 +2,19 @@ from datetime import datetime, timedelta
 
 from django import forms
 from django.conf import settings
+from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils.hashcompat import sha_constructor
 from django.utils.translation import ugettext_lazy as _, ugettext
 
 from django.contrib.sites.models import Site
 
-from pinax.core.utils import get_send_mail
-send_mail = get_send_mail()
-
-from account.forms import SignupForm as BaseSignupForm
-from signup_codes.models import SignupCode, check_signup_code
+from pinax.apps.account.forms import GroupForm, SignupForm as BaseSignupForm
+from pinax.apps.signup_codes.models import SignupCode, check_signup_code
 
 
 class SignupForm(BaseSignupForm):
+    
     signup_code = forms.CharField(max_length=40, required=False, widget=forms.HiddenInput())
     
     def clean_signup_code(self):
@@ -27,18 +26,21 @@ class SignupForm(BaseSignupForm):
             raise forms.ValidationError("Signup code was not valid.")
 
 
-class InviteUserForm(forms.Form):
+class InviteUserForm(GroupForm):
+    
     email = forms.EmailField()
     
     def create_signup_code(self, commit=True):
         email = self.cleaned_data["email"]
         expiry = datetime.now() + timedelta(hours=1)
-        code = sha_constructor("%s%s%s%s" % (
+        bits = [
             settings.SECRET_KEY,
             email,
             str(expiry),
-            settings.SECRET_KEY,
-        )).hexdigest()
+        ]
+        if self.group:
+            bits.append("%s%s" % (self.group._meta, self.group.pk))
+        code = sha_constructor("".join(bits)).hexdigest()
         signup_code = SignupCode(code=code, email=email, max_uses=1, expiry=expiry)
         if commit:
             signup_code.save()
@@ -51,10 +53,11 @@ class InviteUserForm(forms.Form):
         current_site = Site.objects.get_current()
         domain = unicode(current_site.domain)
         
-        subject = ugettext("Create an acccount on %(domain)s") % {"domain": domain}
-        message = render_to_string("signup_codes/invite_user.txt", {
+        ctx = {
+            "group": self.group,
             "signup_code": signup_code,
             "domain": domain,
-        })
-        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [email], priority="high")
-        
+        }
+        subject = render_to_string("signup_codes/invite_user_subject.txt", ctx)
+        message = render_to_string("signup_codes/invite_user.txt", ctx)
+        send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [email])

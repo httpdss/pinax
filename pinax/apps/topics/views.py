@@ -1,14 +1,15 @@
 import os
 
-from django.shortcuts import render_to_response, get_object_or_404
-from django.template import RequestContext
-from django.http import HttpResponseRedirect, HttpResponse, HttpResponseForbidden, Http404
-from django.core.urlresolvers import reverse
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
+from django.core.urlresolvers import reverse
+from django.http import HttpResponseRedirect, HttpResponse, HttpResponseForbidden, Http404
+from django.shortcuts import render_to_response, get_object_or_404
+from django.template import RequestContext
 from django.template.loader import select_template
-from django.utils.translation import ugettext_lazy as _ # @@@ really should be ugettext
+from django.utils.translation import ugettext, ugettext_lazy as _
 
+from django.contrib import messages
 from django.contrib.auth.models import User
 
 if "notification" in settings.INSTALLED_APPS:
@@ -18,31 +19,44 @@ else:
 
 from threadedcomments.models import ThreadedComment
 
-from topics.forms import TopicForm
-from topics.models import Topic
+from pinax.apps.topics.forms import TopicForm
+from pinax.apps.topics.models import Topic
 
-def topics(request, group_slug=None, form_class=TopicForm, template_name="topics/topics.html", bridge=None):
+
+
+def group_and_bridge(request):
+    """
+    Given the request we can depend on the GroupMiddleware to provide the
+    group and bridge.
+    """
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
-    else:
-        group = None
-    
-    if not request.user.is_authenticated():
-        is_member = False
-    else:
-        if group:
-            is_member = group.user_is_member(request.user)
-        else:
-            is_member = True
-    
+    # be group aware
+    group = getattr(request, "group", None)
     if group:
-        group_base = bridge.group_base_template()
+        bridge = request.bridge
     else:
-        group_base = None
+        bridge = None
+    
+    return group, bridge
+
+
+def group_context(group, bridge):
+    # @@@ use bridge
+    ctx = {
+        "group": group,
+    }
+    if group:
+        ctx["group_base"] = bridge.group_base_template()
+    return ctx
+
+
+def topics(request, form_class=TopicForm, template_name="topics/topics.html"):
+    
+    group, bridge = group_and_bridge(request)
+    if group:
+        is_member = group.request.user_is_member()
+    else:
+        is_member = True
     
     if request.method == "POST":
         if request.user.is_authenticated():
@@ -54,10 +68,16 @@ def topics(request, group_slug=None, form_class=TopicForm, template_name="topics
                         group.associate(topic, commit=False)
                     topic.creator = request.user
                     topic.save()
-                    request.user.message_set.create(message=_("You have started the topic %(topic_title)s") % {"topic_title": topic.title})
+                    messages.add_message(request, messages.SUCCESS,
+                        ugettext("You have started the topic %(topic_title)s") % {
+                            "topic_title": topic.title
+                        }
+                    )
                     topic_form = form_class() # @@@ is this the right way to reset it?
             else:
-                request.user.message_set.create(message=_("You are not a member and so cannot start a new topic"))
+                messages.add_message(request, messages.ERROR,
+                    ugettext("You are not a member and so cannot start a new topic")
+                )
                 topic_form = form_class()
         else:
             return HttpResponseForbidden()
@@ -69,28 +89,24 @@ def topics(request, group_slug=None, form_class=TopicForm, template_name="topics
     else:
         topics = Topic.objects.filter(object_id=None)
     
-    return render_to_response(template_name, {
-        "group": group,
-        "topic_form": topic_form,
+    ctx = group_context(group, bridge)
+    ctx.update({
         "is_member": is_member,
+        "topic_form": topic_form,
         "topics": topics,
-        "group_base": group_base,
-    }, context_instance=RequestContext(request))
+    })
+    
+    return render_to_response(template_name, RequestContext(request, ctx))
 
 
-def topic(request, topic_id, group_slug=None, edit=False, template_name="topics/topic.html", bridge=None):
+def topic(request, topic_id, edit=False, template_name="topics/topic.html"):
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
-    else:
-        group = None
-    
+    group, bridge = group_and_bridge(request)
     if group:
+        is_member = group.request.user_is_member()
         topics = group.content_objects(Topic)
     else:
+        is_member = True
         topics = Topic.objects.filter(object_id=None)
     
     topic = get_object_or_404(topics, id=topic_id)
@@ -98,34 +114,25 @@ def topic(request, topic_id, group_slug=None, edit=False, template_name="topics/
     if (request.method == "POST" and edit == True and (request.user == topic.creator or request.user == topic.group.creator)):
         topic.body = request.POST["body"]
         topic.save()
-        return HttpResponseRedirect(topic.get_absolute_url(group))
+        return HttpResponseRedirect(topic.get_absolute_url())
     
-    if group:
-        group_base = bridge.group_base_template()
-    else:
-        group_base = None
-    
-    return render_to_response(template_name, {
+    ctx = group_context(group, bridge)
+    ctx.update({
         "topic": topic,
         "edit": edit,
-        "group": group,
-        "group_base": group_base,
-    }, context_instance=RequestContext(request))
+    })
+    
+    return render_to_response(template_name, RequestContext(request, ctx))
 
 
 def topic_delete(request, topic_id, group_slug=None, bridge=None):
     
-    if bridge:
-        try:
-            group = bridge.get_group(group_slug)
-        except ObjectDoesNotExist:
-            raise Http404
-    else:
-        group = None
-    
+    group, bridge = group_and_bridge(request)
     if group:
+        is_member = group.request.user_is_member()
         topics = group.content_objects(Topic)
     else:
+        is_member = True
         topics = Topic.objects.filter(object_id=None)
     
     topic = get_object_or_404(topics, id=topic_id)

@@ -5,7 +5,7 @@
 {% load tagging_tags %}
 {% load comments_tag %}
 {% load photo_tags %}
-{% load flagtags %}
+{% load flag_tags %}
 
 {% block head_title %}{% blocktrans %}Editing Photo Details{% endblocktrans %}{% endblock %}
 
@@ -23,6 +23,7 @@
     
     {% ifequal photo.member request.user %}
         <form method="POST" action="">
+            {% csrf_token %}
             <table align="center">
                 <tr><td colspan="2">{{ photo_form.non_field_errors }}</td></tr>
                 {% for field in photo_form %}

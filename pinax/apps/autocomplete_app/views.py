@@ -1,12 +1,20 @@
-from django.http import HttpResponse, HttpResponseForbidden
+from django.core.exceptions import ObjectDoesNotExist
 from django.conf import settings
+from django.http import HttpResponse, HttpResponseForbidden
+
+
 
 # @@@ these can be cleaned up a lot, made more generic and with better queries
 
+
+
 def username_autocomplete_all(request):
+    """
+    Provides username matching based on matches of the beginning of the
+    usernames of all users in the system.
+    """
     if request.user.is_authenticated():
         from django.contrib.auth.models import User
-        from basic_profiles.models import Profile
         from avatar.templatetags.avatar_tags import avatar
         q = request.GET.get("q")
         users = User.objects.all()
@@ -21,7 +29,7 @@ def username_autocomplete_all(request):
                         user.username,
                         profile.location
                     )
-                except Profile.DoesNotExist:
+                except ObjectDoesNotExist:
                     pass
                 content.append(entry)
         response = HttpResponse("\n".join(content))
@@ -32,9 +40,12 @@ def username_autocomplete_all(request):
 
 
 def username_autocomplete_friends(request):
+    """
+    Provides username matching based on matches of the beginning of the
+    usernames of friends.
+    """
     if request.user.is_authenticated():
         from friends.models import Friendship
-        from profiles.models import Profile
         from avatar.templatetags.avatar_tags import avatar
         q = request.GET.get("q")
         friends = Friendship.objects.friends_for_user(request.user)
@@ -48,7 +59,7 @@ def username_autocomplete_friends(request):
                         friendship["friend"].username,
                         profile.location
                     )
-                except Profile.DoesNotExist:
+                except ObjectDoesNotExist:
                     pass
                 content.append(entry)
         response = HttpResponse("\n".join(content))
